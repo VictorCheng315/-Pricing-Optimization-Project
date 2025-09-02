@@ -1,0 +1,494 @@
+---
+title: "PS4"
+author: "Victor Cheng"
+date: "2023-10-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+setwd("/Users/victor_cheng/Desktop/Econ487")
+```
+
+```{r}
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(tidyverse)
+  library(broom)
+  library(knitr)
+  library(glmnet)
+  library(rpart)
+  library(maptree)
+  library(dplyr)
+})
+
+options(dplyr.summarise.inform = FALSE)
+```
+
+```{r}
+oj <- read.csv("oj.csv")
+```
+
+```{r}
+oj_reg_demo <- oj %>% 
+  mutate(id_val = row_number(), 
+         log_price = log(price))
+
+demo_cols <- oj %>% 
+  select(AGE60:HVAL150) %>% 
+  colnames()
+```
+
+```{r}
+oj_cv <- oj %>% 
+  mutate(log_price = log(price)) %>% 
+  arrange(week) %>% 
+  group_by(store, brand) %>% 
+  mutate(lag_price = ifelse(lag(week) + 1 == week, lag(log_price), NA)) %>% 
+  ungroup() %>% 
+  filter(!is.na(lag_price)) %>%  
+  mutate(dataset_id = sample(
+           rep(c(1:5), ceiling(n()/5)), 
+           size = n(), 
+           replace = FALSE
+         ))
+
+head(oj_cv, 10) %>% 
+  kable()
+```
+
+1.  
+
+<!-- -->
+
+a.  
+
+```{r}
+#install.packages("glmnet")
+```
+
+b.  
+
+```{r}
+model <- logmove ~ log_price*feat*brand + log_price*WORKWOM +INCOME * WORKWOM + lag_price + SSTRVOL * CPWVOL5 + log_price * lag_price + feat * INCOME +  AGE60 + EDUC + ETHNIC + HHLARGE + HVAL150
+summary(model)
+```
+
+```{r}
+x <- model.matrix(model,oj_cv)
+y <- as.numeric(as.matrix(oj_cv[ ,4]))
+```
+
+```{r}
+set.seed(720)
+lasso_v1_cv<- cv.glmnet(x, y, alpha=1)
+lasso_v1 <- glmnet(x, y, alpha=1)
+
+lasso_v1_cv
+lasso_v1
+```
+
+```{r}
+plot(lasso_v1_cv)
+coef(lasso_v1_cv, s=lasso_v1_cv$lambda.min)
+```
+
+```{r}
+plot(lasso_v1)
+```
+
+```{r}
+cvfit <- cv.glmnet(x, y, alpha=1)
+plot(cvfit)
+cvfit$lambda.min
+log(cvfit$lambda.min)
+coef(cvfit, s = "lambda.min")
+```
+
+WORKWOM:INCOME are kicked out. The ratio of number of features to number of observations is 13/28008=0.00046415. A high ratio can lead to overfitting, where the model is too closely fit to the training data and may not generalize well to new data.
+
+d.  
+
+```{r}
+num_folds <- 5
+
+cv_results <- numeric(num_folds)
+
+set.seed(487)
+indices <- sample(1:num_folds, nrow(oj_cv), replace = TRUE)
+
+for (fold in 1:num_folds) {
+  train_df <- oj_cv[indices != fold, ]
+  test_df <- oj_cv[indices == fold, ]
+
+  x_train <- model.matrix(model, data = train_df)
+  y_train <- train_df$logmove
+
+  lasso_model <- cv.glmnet(x_train, y_train, alpha = 1)
+
+  x_test <- model.matrix(model, data = test_df)
+  y_pred <- predict(lasso_model, s = "lambda.min", newx = x_test)
+
+  test_mse <- mean((test_df$logmove - y_pred)^2)
+  cv_results[fold] <- test_mse
+}
+
+print(cv_results)
+```
+
+```{r}
+ave_mse=(0.4142857+0.4224506+0.4106087+0.4313714+0.4258370)/5
+ave_mse
+```
+
+0.4209107, which is less than 0.462 from the previous problem set.
+
+e.  LASSO can increase the prediction accuracy by adding a penalty equivalent to the absolute value of the magnitude of coefficients. If I use my own intuition as an economist, I might just decided what variables needed to be added based on economic theories or just common sense, and that might be wrong.
+
+f.  In this process, I used my intuition as an economist when I defined what's in the X matrix. I decided which variables might have a plausible relationship with my outcome variable and included them as predictors in my model.
+
+<!-- -->
+
+2.  
+
+<!-- -->
+
+a.  
+
+b.  
+
+```{r}
+reg <- lm(logmove ~ log_price*feat*brand + log_price*WORKWOM + lag_price + SSTRVOL * CPWVOL5 + log_price * lag_price + feat * INCOME +  AGE60 + EDUC + ETHNIC + HHLARGE + HVAL150, data=oj_cv)
+summary(reg)
+```
+
+So for Dominicks, the predicted elasticity is -4.536398-0.514384\*1(lag_price)=-5.050782
+
+ii. For Tropicana the elasticity is -4.536398+ 1.058052=-3.478346
+
+iii. For Tropicana when its featured--4.536398-1.149340=-5.685738.
+
+```{r}
+reg_price <- lm(log_price ~ logmove*feat*brand + EDUC + HHLARGE, data=oj_cv)
+summary(reg_price)
+```
+
+```{r}
+confint(reg, 'log_price:brandtropicana', level=0.95)
+```
+
+So the confidence interval for tropicana is [0.918933,1.197171]
+
+b.  
+
+Dominicks has the most elastic demand.
+
+i.  Products with more elastic demand should have a lower markup over costs because a lower price would lead to a larger increase in quantity demanded for these products, which could lead to higher total revenue.
+
+<!-- -->
+
+3.  
+
+```{r}
+wide_data <- oj_reg_demo %>% 
+  select(store, week, brand, log_price) %>% 
+  pivot_wider(
+    id_cols = c(store,week), 
+    names_from = brand, 
+    values_from=log_price
+  )
+
+head(wide_data, 10) %>% 
+  kable()
+```
+
+```{r}
+cross_price_data <- oj_reg_demo %>% 
+  select(store, week, logmove, brand) %>% 
+  left_join(wide_data,
+            by = c('store', 'week'))
+
+reg_cross_price <- lm(logmove ~ brand + brand:tropicana + brand:minute.maid + brand:dominicks,
+                      data = cross_price_data)
+
+tidy(reg_cross_price) %>% 
+  kable()
+```
+
+```{r}
+cross_price_matrix <- tidy(reg_cross_price) %>% 
+  select(term, estimate) %>% 
+  filter(str_detect(term, '\\:')) %>% 
+  mutate(num = str_extract(term, '(?<=brand).*(?=:)'),
+         den = str_extract(term, '(?<=:).*(?=$)')) %>% 
+  select(num, den, estimate) %>% 
+  arrange(num, den) %>% 
+  pivot_wider(id_cols = num, names_from = den, values_from = estimate)
+
+kable(cross_price_matrix)
+```
+
+a.  Dominicks:-3.5410460
+
+Miniute.maid:-3.866215
+
+Tropicana:-2.8660924
+
+Dominicks with Minute.maid:1.174361
+
+Dominicks with Tropicana:0.0269841
+
+Minute.maid with Tropicana:1.1768804
+
+b.  
+
+```{r}
+cross_price_data_featured <- oj_reg_demo %>% 
+  select(store, week, logmove, brand,feat) %>% 
+  left_join(wide_data,
+            by = c('store', 'week'))
+
+reg_cross_price_feat <- lm(logmove ~ brand + brand:tropicana:feat + brand:minute.maid:feat + brand:dominicks:feat,
+                      data = cross_price_data_featured)
+
+tidy(reg_cross_price_feat) %>% 
+  kable()
+```
+
+```{r}
+cross_price_feat_matrix <- tidy(reg_cross_price_feat) %>% 
+  select(term, estimate) %>% 
+  filter(str_detect(term, '\\:')) %>% 
+  mutate(num = str_extract(term, '(?<=brand).*(?=:)'),
+         den = str_extract(term, '(?<=:).*(?=$)')) %>% 
+  select(num, den, estimate) %>% 
+  arrange(num, den) %>% 
+  pivot_wider(id_cols = num, names_from = den, values_from = estimate)
+
+kable(cross_price_feat_matrix)
+```
+
+b.  For Dominicks when it is featured: -3.2364560
+
+For Tropicana when it is featured:-2.5722191
+
+For Minute.maid when it is featured:-2.581752
+
+From the interaction term, Dominicks suffers the most because it shows that if 1% increase in the price of Minute.maid when featured, 2.17% increase in the sales of Dominicks.
+
+c.  
+
+d.  When the cross-price elasticity is higher, it means that these two are more substitudable, and vise versa.
+
+<!-- -->
+
+ii. Dominicks and Minute Maid are the most competitive with each other. If two products have a high positive cross-price elasticity, it suggests that they are substitutes for each other. Therefore, you would expect their prices to be positively correlated - when one product's price goes up, so does the other's. This means they would be more correlated than the price of other pairs of products.
+
+<!-- -->
+
+4.  
+
+<!-- -->
+
+a.  
+
+```{r}
+Tropicana <- oj_cv[oj_cv$brand == "tropicana", ]
+Minute_Maid <- oj_cv[oj_cv$brand == "minute maid", ]
+Dominicks <- oj_cv[oj_cv$brand == "dominicks", ]
+
+Tropicana$Q <- exp(Tropicana$logmove)
+Minute_Maid$Q <- exp(Minute_Maid$logmove)
+Dominicks$Q <- exp(Dominicks$logmove)
+
+# Combine the data back together
+oj_cv <- rbind(Tropicana, Minute_Maid, Dominicks)
+```
+
+```{r}
+Q <- Tropicana$Q + Minute_Maid$Q + Dominicks$Q
+```
+
+b.  
+
+```{r}
+suppressPackageStartupMessages({
+library(plyr)
+library(dplyr)
+})
+Df1 <- ddply(oj_cv, c('store','week'),function(oj_cv) c(weighted_mean = weighted.mean(oj_cv$price,oj_cv$Q)))
+```
+
+```{r}
+df <- merge(oj_cv, Df1, by = c('store', 'week'))
+```
+
+5.  
+
+<!-- -->
+
+b.  
+
+```{r}
+dataToPass<-df[,c("weighted_mean","AGE60","EDUC","ETHNIC","INCOME","HHLARGE","WORKWOM","HVAL150","SSTRDIST","SSTRVOL","CPDIST5","CPWVOL5")]
+fit<-rpart(as.formula(weighted_mean ~ .),data=dataToPass,method="anova",cp=0.007)
+```
+
+c.  
+
+```{r}
+draw.tree(fit) 
+```
+
+d.  
+
+```{r}
+dataToPass$leaf = fit$where
+```
+
+6.  
+
+```{r}
+chosen_leaves <- c(2,4,5)
+stores_in_chosen_leaves <- subset(dataToPass, leaf %in% chosen_leaves)
+```
+
+```{r}
+brands <- c("dominicks", "tropicana","minute.maid")
+```
+
+```{r}
+leaves <- unique(dataToPass$leaf)
+elasticities_list <- list()
+elasticity_matrix_2 <- matrix(NA, ncol=3, nrow=3)
+colnames(elasticity_matrix_2) <- brands
+rownames(elasticity_matrix_2) <- brands
+elasticity_matrix_4 <- matrix(NA,ncol=3, nrow=3)
+colnames(elasticity_matrix_4) <- brands
+rownames(elasticity_matrix_4) <- brands
+elasticity_matrix_5 <- matrix(NA, ncol=3,nrow=3)
+colnames(elasticity_matrix_5) <- brands
+rownames(elasticity_matrix_5) <- brands
+```
+
+```{r}
+new_cross_price_data <- merge(cross_price_data_featured[c("logmove", "feat")], cross_price_data, by = 'logmove', all.x = TRUE)
+```
+
+```{r}
+oj_leaf_2 = subset(new_cross_price_data, 2 == fit$where)
+oj_leaf_2_D = subset(oj_leaf_2, brand =="dominicks")
+
+oj_leaf_2_M = subset(oj_leaf_2, brand == "minute.maid")
+
+oj_leaf_2_T = subset(oj_leaf_2, brand =="tropicana")
+
+#reg_int_2_D <- glm(logmove~log(dominicks)*feat+log(minute.maid)*feat+log(tropicana)*feat, data=oj_leaf_2_D)
+
+#reg_int_2_T <- glm(logmove~log(dominicks)*feat+log(minute.maid)*feat+log(tropicana)*feat, data=oj_leaf_2_T)
+
+oj_leaf_4 = subset(cross_price_data, 4 == fit$where)
+
+oj_leaf_4_D = subset(oj_leaf_4, brand == "dominicks")
+
+#reg_int_4_D <-glm(logmovelog(dominicks)*feat+log(minute,maid)*feat+log(tropicana)*feat, data=oj_leaf_4_D)
+
+oj_leaf_4_M =subset(oj_leaf_4,brand == "minute.maid")
+
+#reg_int_4_M <- glm(logmove~log(dominicks)*feat+log(minute.maid)*feat+log(tropicana)*feat, data=oj_leaf_4_M)
+
+oj_leaf_4_T =subset(oj_leaf_4, brand == "tropicana")
+
+#reg_int_4_T <- glm(loamovelog(dominicks)*feat+log(minute.maid)*feat+log(tropicana)*feat, data=oj_leaf_4_T)
+
+oj_leaf_5 = subset(cross_price_data, 5 == fit$where)
+
+oj_leaf_5_D = subset(oj_leaf_5,brand == "dominicks")
+
+#reg_int_5_D <-glm(logmove~log(dominicks)*feat+log(minute.maid)*feat+log(tropicana)*feat, data=oj_leaf_5_D)
+
+oj_leaf_5_M = subset(oj_leaf_5, brand =="minute .maid")
+
+#reg_int_5_M <- glm(logmove~log(dominicks)*feat+log(minute,maid)*feat+log(tropicana)*feat, data=oj_leaf_5_M)
+
+oj_leaf_5_T = subset(oj_leaf_5,brand == "tropicana")
+
+#reg_int_5_T <- glm(logmovelog(dominicks)*feat+log(minute.maid)*feat+log(tropicana)*feat, data=oj_leaf_5_T)
+```
+
+#These reggressions above couldn't run because I have NA values in my cross_price_data_featured, and I don't know how to get rid out them.
+
+```{r}
+elasticity_matrix_2[,'dominicks'] <-c(-2.95994722,-0.29529408,0.67151035)
+elasticity_matrix_2[,'minute.maid'] <- c(0.4714752,0.3323011,-2.3194298)
+elasticity_matrix_2[,'tropicana']<- c(0.1338913,-2.0409940,0.3336818)
+elasticity_matrix_4[,'dominicks'] <- c(-2.8342268,-0.2302900,0.8991100)
+elasticity_matrix_4[,'minute.maid'] <- c(0.6100305,0.3461332,-2.3402296)
+elasticity_matrix_4[,'tropicana']<- c(0.1544927,-2.1930293,0.2963101)
+elasticity_matrix_5[,'dominicks'] <-c(-2.5118095,-0.3649431,0.5590767)
+elasticity_matrix_5[,'minute.maid'] <- c(0.5856570,0.1803956,-2.4320476)
+elasticity_matrix_5[,'tropicana'] <- c(0.2176588,-1.8599167,0.3476085)
+elasticities_list[["Leaf_2"]] <- elasticity_matrix_2
+elasticities_list[["Leaf_4"]] <- elasticity_matrix_4
+elasticities_list[["Leaf_5"]] <- elasticity_matrix_5
+elasticities_list
+```
+
+#An alternative way to do this
+
+a.  
+
+```{r}
+new_dataToPass <- merge(df[c("weighted_mean", "logmove","price","brand","feat")], dataToPass, by = 'weighted_mean', all.x = TRUE)
+```
+
+```{r}
+leaf1 <- new_dataToPass[new_dataToPass$leaf == 2,]
+leaf2 <- new_dataToPass[new_dataToPass$leaf == 4,]
+leaf3 <- new_dataToPass[new_dataToPass$leaf == 5,]
+```
+
+```{r}
+reg_int_1 <- glm(logmove~log(price)*brand*feat, data=leaf1)
+reg_int_2 <- glm(logmove~log(price)*brand*feat, data=leaf2)
+reg_int_3 <- glm(logmove~log(price)*brand*feat, data=leaf3)
+```
+
+b.  
+
+```{r}
+leaf1_D <- leaf1 %>% filter(brand=="dominicks")
+```
+
+```{r}
+reg_int_1_D <- glm(logmove~log(price)*feat, data=leaf1_D)
+```
+
+```{r}
+cross_price_matrix_lf_1 <- tidy(reg_int_1) %>% 
+  select(term, estimate) %>% 
+  filter(str_detect(term, '\\:')) %>% 
+  mutate(num = str_extract(term, '(?<=brand).*(?=:)'),
+         den = str_extract(term, '(?<=:).*(?=$)')) %>% 
+  select(num, den, estimate) %>% 
+  arrange(num, den) %>% 
+  pivot_wider(id_cols = num, names_from = den, values_from = estimate)
+kable(cross_price_matrix_lf_1)
+```
+
+7.  
+
+<!-- -->
+
+a.  In the leaf with the highest own-price elasticities, the markups should be lower relative to the other leaves because a high own-price elasticity shows that consumers are very sensative to the price, so prices are increased, consumers will significantly reduce their quantity demanded,so in order to maximize revenue, the store should set a lower markup in these leaves.
+
+b.  
+
+c.  When cross-price elasticity is high, it means that they are more substitutable, therefore, we may need to decrease markups, or consumers would just go for the substitute product. In contrast, when cross-price cross elasticity is low, consumers might be less responsive to price changes and more loyal to specific brands which allows higher markups.
+
+<!-- -->
+
+ii. Regarding the timing of sales, if stores have high own-price elasticity and high cross-price elasticity, it might be beneficial to stagger sales across different brands because when one brand is on sale, consumers might switch from other brands due to the price difference.

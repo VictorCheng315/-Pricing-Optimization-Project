@@ -1,0 +1,171 @@
+---
+title: "PS6"
+author: "Bowen Cheng"
+date: "2023-11-07"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+setwd("/Users/victor_cheng/Desktop/Econ487")
+```
+
+
+```{r}
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(tidyverse)
+  library(broom)
+  library(knitr)
+  library(glmnet)
+  library(rpart)
+  library(maptree)
+  library(janitor)
+  library(randomForest)
+  library(xgboost)
+  library(dplyr)
+})
+
+options(dplyr.summarise.inform = FALSE)
+
+set.seed(487)
+```
+
+1.
+
+a.
+```{r}
+oj <- read_csv("/Users/victor_cheng/Desktop/Econ487/oj.csv",
+               show_col_types = FALSE)%>%
+  clean_names() %>% 
+  mutate(log_price = log(price)) %>% 
+  arrange(week) %>% # sort the data by week
+  group_by(store, brand) %>% # only lag within a store and brand
+  mutate(lag_price = ifelse(lag(week) + 1 == week, lag(log_price), NA)) %>% # calculate lagged prices only if subsequent weeks
+  ungroup() %>% 
+  filter(!is.na(lag_price)) # remove null lagged prices
+```
+
+
+```{r}
+oj$price <- log(oj$price) 
+oj.rf <- randomForest(logmove ~ ., data = oj, ntree = 	100, keep.forest = TRUE) 
+oj$pred_logmove_rf = predict(oj.rf) 
+oj$resid2 <- 	(oj$logmove - oj$pred_logmove_rf)^2 
+```
+
+b.
+```{r}
+ggplot(oj, aes(x = logmove, y = pred_logmove_rf)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, color = "red") +
+  labs(x = "Observed", y = "Predicted", title = "Random Forest: Observed vs Predicted")
+```
+
+c.
+```{r}
+mse_rf <- mean(oj$resid2)
+mse_rf
+```
+
+```{r}
+demo_cols <- oj%>% 
+  select(age60:hval150) %>% 
+  colnames()
+
+model <- str_c('logmove ~ log_price*feat*brand + log_price* workwom + income * workwom + lag_price + sstrvol * cpwvol5 + log_price * lag_price + feat * income + ', str_c(demo_cols, collapse = ' + '))
+
+model1 <- lm(formula=model, data = oj)
+```
+
+```{r}
+X <- model.matrix(model1, oj)
+y <- oj$logmove
+
+cv_fit <- cv.glmnet(X, y, alpha = 1, nfolds = 5)
+glm_fit <- glmnet(X, y, alpha = 1)
+```
+
+```{r}
+cv_coef_results <- coef(cv_fit, s = 'lambda.1se')
+cat(str_interp('LASSO CV MSE: ${round(cv_fit$cvm[which(cv_fit$lambda == cv_fit$lambda.1se)], 2)}'))
+```
+
+The MSE for random forest is  0.1876385, which is significantly lower than the MSE for LASSO model from the previous problem set, which is 0.42.
+
+2.
+
+b.
+```{r}
+oj_reg_demo <- oj %>% 
+  mutate(id_val = row_number())
+```
+
+```{r}
+df_train <- oj_reg_demo %>% 
+  slice_sample(prop = .8)
+
+df_test <- oj_reg_demo %>% 
+  anti_join(df_train,
+            by = 'id_val')
+```
+
+c.
+i.
+```{r}
+train_matrix <- xgb.DMatrix(data = model.matrix(logmove ~ ., data = df_train), label = df_train$logmove)
+test_matrix <- xgb.DMatrix(data = model.matrix(logmove ~ ., data = df_test), label = df_test$logmove)
+```
+ii.
+```{r}
+set.seed(487)
+cv_model <- xgb.cv(
+  data = train_matrix,
+  nfold = 5,
+  nrounds = 1000,
+  early_stopping_rounds = 10,
+  print_every_n = 100
+)
+```
+iii.
+```{r}
+best_iteration <- cv_model$best_iteration
+train_rmse <- cv_model$evaluation_log$train_rmse_mean[best_iteration]
+test_rmse <- cv_model$evaluation_log$test_rmse_mean[best_iteration]
+
+cat("Training RMSE: ", train_rmse, "\n")
+cat("Testing RMSE: ", test_rmse, "\n")
+```
+
+```{r}
+test_mse <- (test_rmse)^2
+test_mse
+```
+The test mse for xgboost is 0.1371704, which is lower than 0.1876385, which is the mse for random forest, and much lower than LASSO model.
+
+iv.
+```{r}
+final_model <- xgboost(
+  data = train_matrix,
+  nrounds = best_iteration,
+  objective = "reg:squarederror"
+)
+```
+v.
+```{r}
+df_test$pred_logmove_xgb <- predict(final_model, test_matrix)
+df_test$resid2_xgb <- (df_test$logmove - df_test$pred_logmove_xgb)^2
+mse_xgb <- mean(df_test$resid2_xgb)
+
+cat("MSE for Final XGBoost: ", mse_xgb, "\n")
+```
+The MSE for final XGBoost is lower than that of the cross-validation model, and also lower than the MSE for random forest and LASSO model
+
+
+
+
