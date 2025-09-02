@@ -1,0 +1,243 @@
+---
+title: "PS7"
+author: "Victor Cheng"
+date: "2023-11-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+1)
+
+a.
+If the firm decides to offer a low quality good, high preference consumer may leave the market because there is no product that can meet their quality expectations.
+
+b.
+The firm can do direct or indirect price discrimination.
+
+c.
+The amount the firm would be willing to pay to identify each type of consumer and price discriminate accordingly is depend on the expected increase in profit from price discrimination, which is calculated by the revenue that could be gained from making price discrimination minus the revenue when there is no price discrimination, and use this result to minus the cost of identifying consumer types. The final result should be positive, otherwise, firm shouldn't pay to identify consumer types.
+
+2)
+
+a.
+
+```{r}
+setwd("/Users/victor_cheng/Desktop/Econ487")
+```
+
+```{r}
+suppressPackageStartupMessages({
+  library(janitor)
+  library(broom)
+  library(knitr)
+  library(xgboost)
+  library(tidyverse)
+})
+
+set.seed(487)
+```
+
+```{r}
+oj <- read_csv("/Users/victor_cheng/Desktop/Econ487/oj.csv",
+               show_col_types = FALSE)%>%
+  clean_names() %>% 
+  mutate(log_price = log(price)) %>% 
+  arrange(week) %>% # sort the data by week
+  group_by(store, brand) %>% # only lag within a store and brand
+  mutate(lag_price = ifelse(lag(week) + 1 == week, lag(log_price), NA)) %>% # calculate lagged prices only if subsequent weeks
+  mutate(lag_feat = ifelse(lag(week) + 1 == week, lag(feat), NA)) %>%
+  mutate(lag_logmove = ifelse(lag(week) + 1 == week, lag(logmove), NA)) %>%
+  ungroup() %>% 
+  filter(!is.na(lag_price)) # remove null lagged prices
+```
+
+```{r}
+oj$store <- as.factor(oj$store)
+oj$week <- as.factor(oj$week)
+```
+
+```{r}
+oj_reg_demo <- oj %>% 
+  mutate(id_val = row_number())
+```
+
+```{r}
+df_first <- oj_reg_demo %>% 
+  slice_sample(prop = .5)
+
+df_second <- oj_reg_demo %>% 
+  anti_join(df_first,
+            by = 'id_val')
+```
+
+```{r}
+model_Q = lm(logmove ~ brand*lag_price+store+week+lag_price*income+lag_logmove*hhlarge+lag_feat*age60, data=oj)
+```
+
+```{r}
+model_P = lm(log_price ~
+brand*lag_logmove+store+week+lag_logmove*hhlarge+lag_feat*educ+lag_price*income,
+data=oj)
+```
+
+
+```{r}
+first_matrix_Q <- xgb.DMatrix(data = model.matrix(model_Q, data = df_first), label = df_first$logmove)
+first_matrix_P <- xgb.DMatrix(data = model.matrix(model_P, data = df_first), label = df_first$log_price)
+second_matrix_Q <- xgb.DMatrix(data = model.matrix(model_Q, data = df_second), label = df_second$logmove)
+second_matrix_P <- xgb.DMatrix(data = model.matrix(model_P, data = df_second), label = df_second$log_price)
+```
+
+```{r}
+set.seed(487)
+cv_model_Q_first <- xgb.cv(
+  data = first_matrix_Q,
+  nfold = 5,
+  nrounds = 1000,
+  early_stopping_rounds = 10,
+  print_every_n = 100
+)
+```
+
+```{r}
+best_iteration_Q_first <- cv_model_Q_first$best_iteration
+final_model_Q_first <- xgboost(data = first_matrix_Q,
+  nrounds = best_iteration_Q_first,
+  early_stopping_rounds = 20,
+  print_every_n = 100
+)
+```
+
+```{r}
+preds_Q_second <- predict(final_model_Q_first, newdata = second_matrix_Q)
+df_second$resid_Q <- (df_second$logmove - preds_Q_second)
+```
+
+```{r}
+set.seed(487)
+cv_model_P_first <- xgb.cv(
+  data = first_matrix_P,
+  nfold = 5,
+  nrounds = 1000,
+  early_stopping_rounds = 10,
+  print_every_n = 100
+)
+```
+
+```{r}
+best_iteration_P_first <- cv_model_P_first$best_iteration
+final_model_P_first <- xgboost(data = first_matrix_P,
+  nrounds = best_iteration_P_first,
+  early_stopping_rounds = 20,
+  print_every_n = 100
+)
+```
+
+```{r}
+preds_P_second <- predict(final_model_P_first, newdata = second_matrix_P)
+df_second$resid_P <- (df_second$log_price - preds_P_second)
+```
+
+```{r}
+set.seed(487)
+cv_model_Q_second <- xgb.cv(
+  data = second_matrix_Q,
+  nfold = 5,
+  nrounds = 1000,
+  early_stopping_rounds = 10,
+  print_every_n = 100
+)
+```
+
+```{r}
+best_iteration_Q_second <- cv_model_Q_second$best_iteration
+final_model_Q_second <- xgboost(data = second_matrix_Q,
+  nrounds = best_iteration_Q_second,
+  early_stopping_rounds = 20,
+  print_every_n = 100
+)
+```
+
+```{r}
+preds_Q_first <- predict(final_model_Q_second, newdata = first_matrix_Q)
+df_first$resid_Q <- (df_first$logmove - preds_Q_first)
+```
+
+```{r}
+set.seed(487)
+cv_model_P_second <- xgb.cv(
+  data = second_matrix_P,
+  nfold = 5,
+  nrounds = 1000,
+  early_stopping_rounds = 10,
+  print_every_n = 100
+)
+```
+
+```{r}
+best_iteration_P_second <- cv_model_P_second$best_iteration
+final_model_P_second <- xgboost(data = second_matrix_P,
+  nrounds = best_iteration_P_second,
+  early_stopping_rounds = 20,
+  print_every_n = 100
+)
+```
+
+```{r}
+preds_P_first <- predict(final_model_P_second, newdata = first_matrix_P)
+df_first$resid_P <- (df_first$log_price - preds_P_first)
+```
+
+```{r}
+df <- rbind(df_first,df_second)
+```
+
+```{r}
+reg <- lm(resid_Q ~ resid_P, data=df)
+summary(reg)
+```
+
+```{r}
+wide_data <- df %>% 
+  select(store, week, brand, resid_P) %>% 
+  pivot_wider(
+    id_cols = c(store,week), 
+    names_from = brand, 
+    values_from=resid_P
+  )
+
+head(wide_data, 10) %>% 
+  kable()
+```
+
+```{r}
+cross_price_data <- df %>% 
+  select(store, week, resid_Q, brand) %>% 
+  left_join(wide_data,
+            by = c('store', 'week'))
+
+# note that we need to interact the logmove's brand with the variables so that the regression "knows" which 
+# brand's quantity sold is the outcome
+reg_cross_price <- lm(resid_Q ~ brand + brand:tropicana + brand:minute.maid + brand:dominicks,
+                      data = cross_price_data)
+
+tidy(reg_cross_price) %>% 
+  kable()
+```
+
+```{r}
+cross_price_matrix <- tidy(reg_cross_price) %>% 
+  select(term, estimate) %>% 
+  filter(str_detect(term, '\\:')) %>% 
+  mutate(num = str_extract(term, '(?<=brand).*(?=:)'),
+         den = str_extract(term, '(?<=:).*(?=$)')) %>% 
+  select(num, den, estimate) %>% 
+  arrange(num, den) %>% 
+  pivot_wider(id_cols = num, names_from = den, values_from = estimate)
+
+kable(cross_price_matrix) 
+```
+
